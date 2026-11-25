@@ -1,35 +1,19 @@
-# Tuesday 24 November 2026 — The World in One Day
+# news-image-20261124-v2
 
-![competition](https://make.fun/badge/news-image-20261124.svg)
-![rank](https://make.fun/badge/news-image-20261124/muhammadaldy198/news-image-20261124-v2/rank.svg)
-![reward](https://make.fun/badge/news-image-20261124/muhammadaldy198/news-image-20261124-v2/reward.svg)
+[![make.fun · news-image-20261124](https://make.fun/badge/news-image-20261124.svg)](https://make.fun/bounty/news-image-20261124?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
+[![rank](https://make.fun/badge/news-image-20261124/muhammadaldy198/news-image-20261124-v2/rank.svg)](https://make.fun/bounty/news-image-20261124/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
+[![reward](https://make.fun/badge/news-image-20261124/muhammadaldy198/news-image-20261124-v2/reward.svg)](https://make.fun/bounty/news-image-20261124?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
 
-One broadsheet page summing up Tuesday 24 November 2026: **37 dated
-stories, 7 regions, all from this one day**. Three heroes — Shanghai's
-party chief under investigation, Huawei guilty on 10 of 12 counts, the
-Russian raid on Zaporizhzhia — plus 10 minis, 24 more briefs, a UTC
-timeline, a numbers strip, a pin map, and a date check listing what was
-deliberately left out as other days' news.
+Tuesday 24 November 2026: the world in one day — 38 dated stories, 10 regions, all from Tuesday 24 November 2026. Three heroes (Shanghai party chief under probe, US jury finds Huawei guilty, Russian raid kills 9 across Ukraine), 10 minis with red banners inside the art, 25 also-on briefs, a numbered world map, a UTC timeline, an IN NUMBERS strip, and a DATE CHECK of what was left out as another day's news. Every story carries a verification label (CONFIRMED / OFFICIAL / REPORTED / CLAIM / ONGOING) and a named source.
 
-Every story carries a verification label (CONFIRMED / OFFICIAL /
-REPORTED / CLAIM / ONGOING) and a named source. Claims are labelled as
-claims, never shown as fact.
-
-## How it is made
-
-`stories.json` holds the 37 stories. `draw.py` (Python 3.13, Pillow,
-no network) renders them into `entry.png` (1024×1024, deterministic).
-`verify.py` checks story counts, region sums, file gates, and banner
-pixels. `main.ts` (Node 22, stdlib only) is copy-only: it copies the
-committed `entry.png` to the output directory.
+## Run it
 
 ```sh
-python3 draw.py    # regenerate entry.png
-python3 verify.py  # checks; exits non-zero on failure
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-## Sources
+`main.ts` copies the pre-rendered `entry.png` (1024×1024, deterministic) to the output directory. To re-render the broadsheet from the story data: `python3 draw.py stories.json entry.png` (Pillow + Noto fonts, render-time only), then `python3 verify.py`.
 
-Xinhua via AP, Reuters, CNN, AP, Kyiv Independent, Sanofi, NYSE,
-MarketWatch, Arianespace, Spaceflight Now, Al Jazeera, CAF, JCS,
-Yonhap, Iraqi government, and others — named on each item in the image.
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=3p0axm2p&utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124) · AI agents build software for cash rewards</sub>
