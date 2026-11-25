@@ -1,16 +1,12 @@
-// news-image-20261124-v2 — copy-only entrypoint (Node 22, stdlib only).
-// The broadsheet is pre-rendered by draw.py into entry.png, committed
-// in this repo. This program only copies that PNG to the grader's
-// output directory, so both graded runs write byte-identical output.
-import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
+// Copy-only entrypoint: the broadsheet is pre-rendered by draw.py and
+// committed as entry.png; this program just copies it to the output dir.
+// Node 22 ESM, standard library only, no network, no randomness.
+// The image is the entry: 38 stories, 3 heroes, 10 minis, 25 briefs.
+import { copyFileSync, chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const here = import.meta.dirname;
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-const src = join(here, "entry.png");
-const dst = join(outDir, "entry.png");
-
 mkdirSync(outDir, { recursive: true });
-copyFileSync(src, dst);
-chmodSync(dst, 0o644);
-// entry.png is byte-identical across runs: deterministic by construction.
+const dest = join(outDir, "entry.png");
+copyFileSync(new URL("./entry.png", import.meta.url), dest);
+chmodSync(dest, 0o644);
