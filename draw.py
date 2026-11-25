@@ -1,72 +1,50 @@
 #!/usr/bin/env python3
-"""Render Tuesday 24 November 2026 as one broadsheet page, 1024x1024.
-
-Deterministic: no clock, no randomness, no network. Reads stories.json
-in this directory and writes entry.png next to it.
-Layout budget (single table, sums to 1024):
-  margin 12 all sides, gutter 8, content width 1000
-  masthead 12..100 | numbers 108..146 | regions 154..172
-  timeline 180..206 | heroes 214..444 | minis r1 452..584 | minis r2 592..724
-  also-on+map 732..916 | date-check 924..976 | footer 984..1012
+"""Render Tuesday 24 November 2026 as one broadsheet, 1024x1024.
+Fresh layout for the rebuild: masthead is the date itself, 3 heroes with
+red banners inside the art, 10 minis, 25 also-on briefs in two columns,
+a numbered world map, a UTC timeline, an IN NUMBERS strip and a DATE CHECK.
+Deterministic: fixed layout, fixed fonts, no randomness, no network.
 """
-import json
-import os
-import sys
-
+import json, sys
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 W = 1024
-H = 1024
 MARGIN = 12
-GUT = 8
-CW = W - 2 * MARGIN  # 1000
-
-INK = (18, 18, 18)
+GUTTER = 8
+INK = (24, 24, 22)
 PAPER = (250, 247, 238)
-RED = (176, 0, 32)
-DARKRED = (140, 0, 24)
-RULE = (120, 110, 95)
-FAINT = (90, 84, 72)
+RED = (178, 38, 30)
+DARK = (28, 30, 34)
+GREY = (110, 108, 100)
+RULE = (180, 176, 164)
+FDIR = "/usr/share/fonts/truetype/noto"
 
-TAG_FILL = {
-    "CONFIRMED": (26, 122, 58),
-    "OFFICIAL": (31, 78, 140),
-    "REPORTED": (154, 106, 0),
-    "CLAIM": (176, 0, 32),
-    "ONGOING": (106, 61, 154),
-}
+BUDGET = [("kicker", 18), ("masthead", 80), ("numbers", 32), ("timeline", 26),
+          ("heroes", 212), ("minis", 278), ("alsoon", 284), ("datecheck", 70),
+          ("footer", 24)]
+assert sum(h for _, h in BUDGET) == W, "budget must sum to 1024"
 
-F_SERIF_BLACK = "/usr/share/fonts/truetype/noto/NotoSerifDisplay-Black.ttf"
-F_SERIF_BOLD = "/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf"
-F_SERIF = "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf"
-F_SANS = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
-F_SANS_BOLD = "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
-F_SANS_BLACK = "/usr/share/fonts/truetype/noto/NotoSans-Black.ttf"
-F_MONO = "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf"
-F_MONO_BOLD = "/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf"
+def F(name, size):
+    return ImageFont.truetype(f"{FDIR}/{name}", size)
 
-_cache = {}
+def cols(x0, total, n, gutter=GUTTER):
+    """Column x positions + widths; remainder pixels go to the first columns."""
+    w = (total - gutter * (n - 1)) // n
+    rem = total - gutter * (n - 1) - w * n
+    xs, ws = [], []
+    x = x0
+    for i in range(n):
+        wi = w + (1 if i < rem else 0)
+        xs.append(x); ws.append(wi); x += wi + gutter
+    return xs, ws
 
-
-def font(path, size):
-    key = (path, size)
-    if key not in _cache:
-        _cache[key] = ImageFont.truetype(path, size)
-    return _cache[key]
-
-
-def text_w(draw, s, f):
-    return draw.textlength(s, font=f)
-
-
-def wrap(draw, s, f, max_w):
-    words = s.split(" ")
-    lines = []
-    cur = ""
+def wrap(draw, text, font, width):
+    words = text.split()
+    lines, cur = [], ""
     for word in words:
-        trial = (cur + " " + word).strip()
-        if draw.textlength(trial, font=f) <= max_w:
+        trial = f"{cur} {word}".strip()
+        if draw.textlength(trial, font=font) <= width:
             cur = trial
         else:
             if cur:
@@ -76,591 +54,408 @@ def wrap(draw, s, f, max_w):
         lines.append(cur)
     return lines
 
-
-def fit_text(draw, s, f, max_w, max_lines=None):
-    """Wrap s; assert it fits in max_w and (optionally) max_lines."""
-    lines = wrap(draw, s, f, max_w)
-    if max_lines is not None:
-        assert len(lines) <= max_lines, "TEXT OVERFLOW %r -> %d lines" % (s, len(lines))
+def fit_lines(draw, text, font, width, max_lines, what):
+    lines = wrap(draw, text, font, width)
+    assert len(lines) <= max_lines, f"{what}: {len(lines)} lines > {max_lines}: {text!r}"
     return lines
 
+def banner(draw, x, y, w, text, font, h=20):
+    draw.rectangle([x, y, x + w - 1, y + h - 1], fill=RED)
+    draw.text((x + 6, y + (h - font.size) // 2 - 1), text, font=font, fill=(255, 255, 255))
 
-def draw_lines(draw, lines, x, y, f, fill, leading):
-    for ln in lines:
-        draw.text((x, y), ln, font=f, fill=fill)
-        y += leading
-    return y
+# ---------------------------------------------------------------- painters
+def sky(draw, x, y, w, h, top, bot):
+    for i in range(h):
+        t = i / max(1, h - 1)
+        c = tuple(int(top[k] + (bot[k] - top[k]) * t) for k in range(3))
+        draw.line([(x, y + i), (x + w - 1, y + i)], fill=c)
 
+def paint_shanghai(d, x, y, w, h):
+    sky(d, x, y, w, h, (28, 44, 74), (64, 92, 128))
+    d.ellipse([x + w - 58, y + 8, x + w - 30, y + 36], fill=(232, 214, 150))
+    d.rectangle([x, y + h - 22, x + w, y + h], fill=(22, 34, 58))
+    for bx, bw, bh in [(4, 16, 52), (24, 12, 70), (40, 18, 44), (62, 12, 84), (78, 16, 58)]:
+        d.rectangle([x + bx, y + h - 22 - bh, x + bx + bw, y + h - 22], fill=(16, 26, 48))
+    # Oriental Pearl: two spheres on a needle
+    cx = x + w // 2
+    d.line([(cx, y + 14), (cx, y + h - 22)], fill=(200, 210, 220), width=3)
+    d.ellipse([cx - 13, y + 26, cx + 13, y + 52], fill=(214, 72, 54))
+    d.ellipse([cx - 8, y + 62, cx + 8, y + 78], fill=(214, 72, 54))
+    for wy in (y + 30, y + 48, y + 66):
+        for wx in range(x + 8, x + w - 8, 14):
+            d.rectangle([wx, wy, wx + 4, wy + 3], fill=(240, 220, 130))
+    d.line([(x, y + h - 22), (x + w, y + h - 22)], fill=(240, 220, 130), width=2)
 
-def tag_chip(draw, x, y, tag, h=13):
-    """Draw a verification tag chip; return its width."""
-    f = font(F_SANS_BOLD, 8)
-    w = int(draw.textlength(tag, font=f)) + 8
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=2,
-                           fill=TAG_FILL[tag])
-    draw.text((x + 4, y + 2), tag, font=f, fill=(255, 255, 255))
-    return w
+def paint_court(d, x, y, w, h):
+    sky(d, x, y, w, h, (52, 58, 66), (96, 100, 108))
+    # courthouse: pediment + columns + steps
+    d.polygon([(x + w // 2 - 46, y + 12), (x + w // 2 + 46, y + 12), (x + w // 2, y + 34)], fill=(226, 220, 204))
+    d.rectangle([x + 14, y + 34, x + w - 14, y + h - 20], fill=(210, 203, 184))
+    for i in range(5):
+        cx = x + 24 + i * (w - 48) // 4
+        d.rectangle([cx - 5, y + 38, cx + 5, y + h - 26], fill=(240, 236, 222))
+    d.rectangle([x + w // 2 - 16, y + h - 44, x + w // 2 + 16, y + h - 20], fill=(40, 36, 30))
+    d.ellipse([x + w // 2 - 7, y + h - 40, x + w // 2 - 1, y + h - 34], fill=(240, 220, 130))
+    d.ellipse([x + w // 2 + 1, y + h - 40, x + w // 2 + 7, y + h - 34], fill=(240, 220, 130))
+    for sy in range(3):
+        d.rectangle([x + 8, y + h - 18 + sy * 5, x + w - 8, y + h - 15 + sy * 5], fill=(190, 184, 168))
+    # scales of justice, small, top right
+    sx, sy = x + w - 34, y + 16
+    d.line([(sx, sy), (sx, sy + 22)], fill=(240, 220, 130), width=2)
+    d.line([(sx - 12, sy + 4), (sx + 12, sy + 4)], fill=(240, 220, 130), width=2)
+    d.ellipse([sx - 16, sy + 8, sx - 8, sy + 16], fill=(240, 220, 130))
+    d.ellipse([sx + 8, sy + 8, sx + 16, sy + 16], fill=(240, 220, 130))
 
+def paint_zaporizhzhia(d, x, y, w, h):
+    sky(d, x, y, w, h, (30, 38, 56), (70, 78, 96))
+    # smoke + fire glow
+    d.ellipse([x + w // 2 - 34, y + 6, x + w // 2 + 26, y + 46], fill=(226, 120, 40))
+    d.ellipse([x + w // 2 - 18, y + 16, x + w // 2 + 12, y + 40], fill=(240, 190, 90))
+    for i, (sx, sy, r) in enumerate([(w // 2 - 40, 8, 12), (w // 2 - 22, 2, 15), (w // 2 + 4, 6, 13)]):
+        d.ellipse([x + sx - r, y + sy, x + sx + r, y + sy + r], fill=(120, 118, 112))
+    # damaged apartment block
+    d.rectangle([x + 10, y + 34, x + w - 10, y + h], fill=(96, 90, 82))
+    d.polygon([(x + 10, y + 34), (x + w // 2, y + 34), (x + w // 2 - 14, y + 58), (x + 10, y + 58)], fill=(60, 56, 50))
+    for row in range(4):
+        for col in range(6):
+            wx = x + 18 + col * 15
+            wy = y + 62 + row * 13
+            if wx + 8 < x + w - 14:
+                d.rectangle([wx, wy, wx + 8, wy + 7], fill=(240, 210, 120) if (row + col) % 3 else (52, 48, 44))
+    d.rectangle([x, y + h - 8, x + w, y + h], fill=(40, 38, 34))
 
-def banner(draw, box, text, size=15):
-    """Red banner strip inside art, bottom-anchored, white bold text."""
-    x0, y0, x1, y1 = box
-    f = font(F_SANS_BLACK, size)
-    tw = draw.textlength(text, font=f)
-    assert tw <= (x1 - x0 - 8), "BANNER TOO WIDE: %r" % text
-    bh = size + 10
-    draw.rectangle([x0, y1 - bh, x1, y1], fill=RED)
-    draw.text((x0 + 4, y1 - bh + 5), text, font=f, fill=(255, 255, 255))
-    return bh
+def paint_sanofi(d, x, y, w, h):
+    sky(d, x, y, w, h, (240, 244, 248), (200, 214, 226))
+    d.rectangle([x, y + h - 26, x + w, y + h], fill=(30, 60, 90))
+    # lab flasks + pill
+    d.rectangle([x + 12, y + 12, x + 34, y + h - 26], fill=(120, 170, 200))
+    d.polygon([(x + 12, y + 34), (x + 34, y + 34), (x + 40, y + h - 26), (x + 6, y + h - 26)], fill=(90, 150, 185))
+    d.ellipse([x + w - 46, y + 10, x + w - 10, y + 34], fill=(214, 72, 54))
+    d.rectangle([x + w - 46, y + 18, x + w - 10, y + 26], fill=(255, 255, 255))
+    d.line([(x + 44, y + 20), (x + w - 52, y + 20)], fill=(120, 140, 160), width=2)
+    for i in range(4):
+        d.ellipse([x + 48 + i * 16, y + 30 + (i % 2) * 8, x + 56 + i * 16, y + 38 + (i % 2) * 8], fill=(214, 72, 54))
 
+def paint_dow(d, x, y, w, h):
+    sky(d, x, y, w, h, (16, 40, 60), (30, 70, 96))
+    # rising chart line + bars
+    base = y + h - 18
+    bars = [10, 16, 12, 22, 18, 30, 26, 38]
+    bw = (w - 16) // len(bars)
+    for i, bh in enumerate(bars):
+        bx = x + 8 + i * bw
+        d.rectangle([bx, base - bh, bx + bw - 3, base], fill=(46, 140, 90) if i < 6 else (240, 190, 90))
+    pts = [(x + 8 + i * bw + bw // 2, base - bh) for i, bh in enumerate(bars)]
+    d.line(pts, fill=(255, 255, 255), width=3)
+    d.ellipse([pts[-1][0] - 4, pts[-1][1] - 4, pts[-1][0] + 4, pts[-1][1] + 4], fill=(255, 255, 255))
+    d.text((x + 8, y + 4), "50,019", font=F("NotoSans-Bold.ttf", 15), fill=(255, 255, 255))
 
-# ---------------------------------------------------------------- art scenes
-# Every hero scene is layered (>=5 elements), flat vector, NO halftone.
-# Art boxes exclude the red banner strip at their bottom.
+def paint_ariane(d, x, y, w, h):
+    sky(d, x, y, w, h, (18, 30, 52), (44, 70, 104))
+    for sx in range(x + 10, x + w - 6, 18):
+        d.ellipse([sx, y + 6 + (sx % 23), sx + 2, y + 8 + (sx % 23)], fill=(220, 225, 235))
+    # flame + rocket
+    cx = x + w // 2
+    d.polygon([(cx - 10, y + 30), (cx + 10, y + 30), (cx, y + 62)], fill=(240, 160, 40))
+    d.polygon([(cx - 6, y + 34), (cx + 6, y + 34), (cx, y + 52)], fill=(250, 220, 120))
+    d.rectangle([cx - 9, y + 6, cx + 9, y + 32], fill=(235, 235, 230))
+    d.polygon([(cx - 9, y + 6), (cx + 9, y + 6), (cx, y - 6)], fill=(214, 72, 54))
+    d.rectangle([cx - 9, y + 14, cx + 9, y + 18], fill=(214, 72, 54))
+    d.polygon([(cx - 9, y + 28), (cx - 16, y + 40), (cx - 9, y + 40)], fill=(200, 60, 44))
+    d.polygon([(cx + 9, y + 28), (cx + 16, y + 40), (cx + 9, y + 40)], fill=(200, 60, 44))
+    # boosters + launch pad + smoke
+    d.rectangle([x + 8, y + h - 12, x + w - 8, y + h - 6], fill=(120, 118, 110))
+    for sx in (x + 14, x + w - 30):
+        d.ellipse([sx, y + h - 26, sx + 16, y + h - 10], fill=(200, 198, 190))
+    # satellite dots trailing up-right
+    for i in range(4):
+        d.ellipse([cx + 22 + i * 12, y + 8 + i * 6, cx + 27 + i * 12, y + 13 + i * 6], fill=(240, 220, 130))
 
-def art_shanghai(draw, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], fill=(24, 38, 66))
-    for i, c in enumerate([(32, 52, 88), (40, 64, 104), (48, 76, 120)]):
-        draw.rectangle([x0, y0 + 14 + i * 8, x1, y0 + 26 + i * 8], fill=c)
-    # skyline silhouettes
-    base = y1
-    towers = [(0, 62, 30), (34, 96, 22), (60, 52, 26), (90, 110, 30),
-              (124, 70, 24), (152, 88, 26), (182, 58, 24), (210, 92, 26),
-              (240, 66, 22), (266, 84, 24), (292, 60, 22)]
-    for dx, th, tw in towers:
-        draw.rectangle([x0 + dx, base - th, x0 + dx + tw, base], fill=(12, 20, 36))
-    # Oriental Pearl Tower: two spheres on a stem
-    px = x0 + 150
-    draw.rectangle([px - 2, base - 118, px + 2, base], fill=(12, 20, 36))
-    draw.ellipse([px - 13, base - 118, px + 13, base - 92], fill=(150, 30, 40))
-    draw.ellipse([px - 9, base - 78, px + 9, base - 60], fill=(150, 30, 40))
-    draw.polygon([(px - 2, base - 118), (px - 16, base - 132),
-                  (px + 16, base - 132)], fill=(12, 20, 36))
-    # lit windows
-    for wx in range(x0 + 8, x1 - 8, 14):
-        for wy in range(base - 96, base - 32, 12):
-            if (wx * 7 + wy * 3) % 5 == 0:
-                draw.rectangle([wx, wy, wx + 3, wy + 4], fill=(240, 200, 90))
-    # red seal stamp
-    cx, cy = x1 - 42, y0 + 34
-    draw.ellipse([cx - 26, cy - 26, cx + 26, cy + 26], outline=(200, 40, 55),
-                 width=3)
-    draw.ellipse([cx - 19, cy - 19, cx + 19, cy + 19], outline=(200, 40, 55),
-                 width=1)
-    sf = font(F_SANS_BLACK, 11)
-    draw.text((cx - 14, cy - 14), "PROBE", font=sf, fill=(200, 40, 55))
-    draw.text((cx - 12, cy - 1), "2026", font=sf, fill=(200, 40, 55))
-    # document strip at foot
-    draw.rectangle([x0 + 10, base - 42, x0 + 120, base - 30], fill=(250, 247, 238))
-    draw.line([x0 + 16, base - 38, x0 + 114, base - 38], fill=(120, 110, 95), width=1)
-    draw.line([x0 + 16, base - 34, x0 + 90, base - 34], fill=(120, 110, 95), width=1)
+def paint_riyadh(d, x, y, w, h):
+    sky(d, x, y, w, h, (226, 190, 140), (200, 150, 100))
+    # twisted tower + city
+    cx = x + w // 2
+    for i in range(5):
+        yy = y + 8 + i * 11
+        off = (i % 2) * 6 - 3
+        d.rectangle([cx - 16 + off, yy, cx + 16 + off, yy + 10], fill=(90, 80, 70))
+    d.polygon([(cx - 10, y + 2), (cx + 10, y + 2), (cx, y + 12)], fill=(70, 60, 52))
+    for bx, bh in [(6, 30), (w - 22, 38), (w - 40, 24)]:
+        d.rectangle([x + bx, y + h - 14 - bh, x + bx + 16, y + h - 14], fill=(110, 98, 84))
+    d.rectangle([x, y + h - 14, x + w, y + h], fill=(60, 52, 44))
+    d.ellipse([cx - 22, y + 38, cx + 22, y + h - 14], fill=(226, 120, 40))
+    d.ellipse([cx - 12, y + 44, cx + 12, y + h - 16], fill=(240, 190, 90))
 
+def paint_taiex(d, x, y, w, h):
+    sky(d, x, y, w, h, (20, 60, 50), (40, 110, 80))
+    base = y + h - 16
+    pts = [(x + 6, base - 6), (x + w // 4, base - 16), (x + w // 2, base - 12),
+           (x + 3 * w // 4, base - 30), (x + w - 8, base - 44)]
+    d.line(pts, fill=(120, 220, 140), width=4)
+    d.polygon(pts + [(x + w - 8, base), (x + 6, base)], fill=(60, 160, 90))
+    d.polygon([(x + w - 8, base - 44), (x + w - 8, base - 30), (x + w - 22, base - 44)], fill=(120, 220, 140))
+    d.text((x + 6, y + 4), "+8.99%", font=F("NotoSans-Bold.ttf", 15), fill=(255, 255, 255))
+    for i in range(5):
+        d.rectangle([x + 8 + i * 12, base - 4 - i, x + 12 + i * 12, base], fill=(240, 220, 130))
 
-def art_huawei(draw, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], fill=(30, 32, 52))
-    # courthouse columns
-    for cx in range(x0 + 18, x1 - 10, 46):
-        draw.rectangle([cx, y0 + 18, cx + 16, y1], fill=(58, 60, 88))
-        draw.rectangle([cx - 3, y0 + 12, cx + 19, y0 + 18], fill=(72, 74, 104))
-        draw.rectangle([cx - 3, y1 - 6, cx + 19, y1], fill=(72, 74, 104))
-    # pediment
-    draw.polygon([(x0, y0 + 12), (x1, y0 + 12), ((x0 + x1) // 2, y0 - 2)],
-                 fill=(72, 74, 104))
-    # scales of justice, centre
-    cx = (x0 + x1) // 2
-    cy = y0 + 58
-    draw.line([cx, cy - 26, cx, cy + 22], fill=(240, 200, 90), width=3)
-    draw.line([cx - 34, cy - 22, cx + 34, cy - 22], fill=(240, 200, 90), width=3)
-    draw.line([cx - 34, cy - 22, cx - 34, cy - 6], fill=(240, 200, 90), width=2)
-    draw.line([cx + 34, cy - 22, cx + 34, cy - 6], fill=(240, 200, 90), width=2)
-    draw.polygon([(cx - 46, cy - 4), (cx - 22, cy - 4), (cx - 34, cy + 6)],
-                 fill=(240, 200, 90))
-    draw.polygon([(cx + 22, cy - 4), (cx + 46, cy - 4), (cx + 34, cy + 6)],
-                 fill=(240, 200, 90))
-    draw.ellipse([cx - 5, cy - 32, cx + 5, cy - 22], fill=(240, 200, 90))
-    draw.rectangle([cx - 14, cy + 22, cx + 14, y1 - 28], fill=(240, 200, 90))
-    # gavel, lower left
-    gx, gy = x0 + 34, y1 - 58
-    draw.line([gx, gy, gx + 34, gy - 12], fill=(200, 160, 90), width=5)
-    draw.rectangle([gx + 30, gy - 24, gx + 52, gy - 8], fill=(160, 110, 60))
-    # verdict paper, lower right
-    draw.rectangle([x1 - 92, y1 - 64, x1 - 12, y1 - 30], fill=(250, 247, 238))
-    vf = font(F_SANS_BLACK, 13)
-    draw.text((x1 - 84, y1 - 60), "10 OF 12", font=vf, fill=(176, 0, 32))
-    draw.line([x1 - 84, y1 - 42, x1 - 20, y1 - 42], fill=(120, 110, 95), width=1)
-    draw.line([x1 - 84, y1 - 36, x1 - 40, y1 - 36], fill=(120, 110, 95), width=1)
+def paint_senegal(d, x, y, w, h):
+    sky(d, x, y, w, h, (30, 90, 50), (60, 140, 80))
+    # pitch + trophy + ball
+    d.rectangle([x, y + h - 24, x + w, y + h], fill=(40, 120, 60))
+    d.line([(x + 8, y + h - 12), (x + w - 8, y + h - 12)], fill=(255, 255, 255), width=1)
+    cx = x + w // 2
+    d.polygon([(cx - 12, y + 10), (cx + 12, y + 10), (cx + 8, y + 30), (cx - 8, y + 30)], fill=(240, 200, 60))
+    d.rectangle([cx - 10, y + 30, cx + 10, y + 34], fill=(240, 200, 60))
+    d.rectangle([cx - 14, y + 34, cx + 14, y + 38], fill=(200, 160, 40))
+    d.ellipse([x + 12, y + h - 40, x + 30, y + h - 22], fill=(255, 255, 255))
+    d.polygon([(x + 21, y + h - 40), (x + 26, y + h - 34), (x + 21, y + h - 28), (x + 16, y + h - 34)], fill=(30, 30, 30))
+    for sx in (x + w - 30, x + w - 48):
+        d.ellipse([sx, y + 12, sx + 8, y + 20], fill=(255, 220, 120))
 
+def paint_solomons(d, x, y, w, h):
+    sky(d, x, y, w, h, (30, 80, 110), (70, 130, 160))
+    d.rectangle([x, y + h - 20, x + w, y + h], fill=(20, 70, 100))
+    # island + palm + torn pact paper
+    d.ellipse([x + w // 2 - 40, y + h - 30, x + w // 2 + 40, y + h - 8], fill=(40, 120, 70))
+    d.line([(x + w // 2, y + h - 28), (x + w // 2, y + 22)], fill=(90, 60, 30), width=3)
+    for dx, dy in [(-16, -6), (16, -6), (-12, -14), (12, -14)]:
+        d.line([(x + w // 2, y + 24), (x + w // 2 + dx, y + 24 + dy)], fill=(50, 140, 70), width=3)
+    d.rectangle([x + 10, y + 12, x + 34, y + 30], fill=(245, 242, 230))
+    d.rectangle([x + 36, y + 12, x + 60, y + 30], fill=(245, 242, 230))
+    d.line([(x + 34, y + 12), (x + 36, y + 30)], fill=(178, 38, 30), width=2)
+    for wy in (y + 17, y + 23):
+        d.line([(x + 14, wy), (x + 30, wy)], fill=(120, 116, 104), width=1)
 
-def art_zaporizhzhia(draw, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], fill=(74, 62, 58))
-    for i, c in enumerate([(96, 78, 66), (118, 94, 76), (140, 110, 88)]):
-        draw.rectangle([x0, y0 + 10 + i * 7, x1, y0 + 20 + i * 7], fill=c)
-    base = y1
-    # apartment block, broken in the middle
-    draw.rectangle([x0 + 30, base - 96, x0 + 150, base], fill=(52, 44, 42))
-    draw.rectangle([x0 + 178, base - 78, x0 + 292, base], fill=(44, 38, 36))
-    draw.polygon([(x0 + 150, base - 96), (x0 + 178, base - 78),
-                  (x0 + 178, base - 40), (x0 + 150, base - 52)],
-                 fill=(52, 44, 42))
-    # windows, some dark (destroyed), some lit
-    for wx in range(x0 + 40, x0 + 146, 18):
-        for wy in range(base - 88, base - 8, 16):
-            lit = (wx * 5 + wy * 11) % 4 != 0
-            draw.rectangle([wx, wy, wx + 9, wy + 10],
-                           fill=(240, 200, 90) if lit else (20, 16, 14))
-    for wx in range(x0 + 188, x0 + 288, 18):
-        for wy in range(base - 70, base - 8, 16):
-            lit = (wx * 3 + wy * 7) % 3 != 0
-            draw.rectangle([wx, wy, wx + 9, wy + 10],
-                           fill=(240, 200, 90) if lit else (20, 16, 14))
-    # rubble mound in the gap
-    draw.polygon([(x0 + 146, base), (x0 + 182, base), (x0 + 164, base - 26)],
-                 fill=(30, 26, 24))
-    # smoke columns
-    for sx, sw in [(x0 + 158, 16), (x0 + 178, 12)]:
-        draw.ellipse([sx, y0 + 12, sx + sw, y0 + 34], fill=(150, 140, 130))
-        draw.ellipse([sx + 4, y0 + 2, sx + sw - 2, y0 + 20], fill=(165, 155, 145))
-    # rescue lights
-    for lx in range(x0 + 20, x1 - 20, 34):
-        draw.ellipse([lx, base - 34, lx + 5, base - 29], fill=(255, 220, 90))
-    # searchlight beam, narrow, low alpha feel via pale colour
-    draw.polygon([(x0 + 60, base - 28), (x0 + 90, y0 + 30), (x0 + 110, y0 + 30),
-                  (x0 + 90, base - 28)], fill=(200, 190, 150))
+def paint_kadiz(d, x, y, w, h):
+    sky(d, x, y, w, h, (24, 40, 66), (58, 88, 122))
+    # jets + radar sweep + island
+    for jx, jy in [(w // 3, 18), (2 * w // 3, 30)]:
+        d.polygon([(x + jx, y + jy), (x + jx + 22, y + jy + 6), (x + jx, y + jy + 12)], fill=(220, 220, 215))
+        d.polygon([(x + jx + 4, y + jy + 12), (x + jx + 10, y + jy + 20), (x + jx + 12, y + jy + 12)], fill=(180, 180, 175))
+    d.ellipse([x + 8, y + h - 34, x + 44, y + h - 6], fill=(40, 90, 60))
+    d.line([(x + 26, y + h - 30), (x + 26, y + h - 14)], fill=(240, 220, 130), width=2)
+    d.arc([x + w - 40, y + h - 40, x + w - 4, y + h - 4], 180, 270, fill=(240, 90, 70), width=3)
+    d.arc([x + w - 52, y + h - 52, x + w + 8, y + h + 8], 180, 270, fill=(240, 90, 70), width=2)
+    d.rectangle([x, y + h - 6, x + w, y + h], fill=(22, 34, 58))
 
+def paint_gaza(d, x, y, w, h):
+    sky(d, x, y, w, h, (40, 34, 30), (90, 74, 58))
+    # skyline + smoke column + searchlight
+    for bx, bw, bh in [(4, 18, 40), (26, 14, 56), (44, 20, 34), (68, 16, 48)]:
+        d.rectangle([x + bx, y + h - 12 - bh, x + bx + bw, y + h - 12], fill=(52, 46, 40))
+        for wy in range(y + h - 12 - bh + 6, y + h - 14, 12):
+            d.rectangle([x + bx + 4, wy, x + bx + 8, wy + 5], fill=(240, 210, 120))
+    d.polygon([(x + w - 20, y + h - 12), (x + w - 34, y + 8), (x + w - 8, y + 8)], fill=(240, 230, 180))
+    for i, (sx, sy, r) in enumerate([(w // 2 - 6, 4, 10), (w // 2 + 6, 12, 12), (w // 2 - 2, 22, 9)]):
+        d.ellipse([x + sx - r, y + sy, x + sx + r, y + sy + r], fill=(130, 124, 114))
+    d.rectangle([x, y + h - 12, x + w, y + h], fill=(36, 32, 28))
 
-MINI_BG = {
-    "sanofi": (28, 78, 110), "dow": (22, 92, 58), "ariane": (30, 42, 84),
-    "riyadh": (96, 74, 30), "taiex": (24, 88, 96), "senegal": (28, 110, 60),
-    "solomons": (30, 96, 110), "korea": (110, 40, 40), "gaza": (88, 74, 60),
-    "kurdish": (70, 60, 110),
-}
+def paint_cikande(d, x, y, w, h):
+    sky(d, x, y, w, h, (52, 44, 38), (96, 80, 62))
+    # factory + tents + smoke
+    d.rectangle([x + 6, y + 26, x + w - 6, y + h - 10], fill=(70, 62, 54))
+    d.polygon([(x + 6, y + 26), (x + w // 2, y + 12), (x + w - 6, y + 26)], fill=(50, 44, 38))
+    for i in range(3):
+        d.rectangle([x + 14 + i * 22, y + 36, x + 24 + i * 22, y + 52], fill=(240, 210, 120))
+    d.rectangle([x + w - 30, y + 8, x + w - 24, y + 26], fill=(60, 54, 48))
+    for i, (sx, sy, r) in enumerate([(w - 26, 2, 9), (w - 34, 8, 11), (w - 18, 10, 8)]):
+        d.ellipse([x + sx - r, y + sy, x + sx + r, y + sy + r], fill=(120, 116, 108))
+    for tx in (x + 12, x + 44):
+        d.polygon([(tx, y + h - 10), (tx + 12, y + h - 26), (tx + 24, y + h - 10)], fill=(240, 236, 222))
+        d.polygon([(tx + 10, y + h - 10), (tx + 14, y + h - 18), (tx + 18, y + h - 10)], fill=(40, 40, 38))
+    d.rectangle([x, y + h - 10, x + w, y + h], fill=(44, 40, 36))
 
+PAINTERS = {"shanghai": paint_shanghai, "court": paint_court, "zaporizhzhia": paint_zaporizhzhia,
+            "sanofi": paint_sanofi, "dow": paint_dow, "ariane": paint_ariane, "riyadh": paint_riyadh,
+            "taiex": paint_taiex, "senegal": paint_senegal, "solomons": paint_solomons,
+            "kadiz": paint_kadiz, "gaza": paint_gaza, "cikande": paint_cikande}
 
-def art_mini(draw, key, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], fill=MINI_BG[key])
-    cx = (x0 + x1) // 2
-    cy = y0 + (y1 - y0) // 2 - 6
-    if key == "sanofi":
-        draw.rounded_rectangle([x0 + 52, cy - 10, x1 - 52, cy + 10], radius=10,
-                               fill=(255, 255, 255))
-        draw.rounded_rectangle([x0 + 52, cy - 10, cx, cy + 10], radius=10,
-                               fill=(176, 0, 32))
-        draw.ellipse([x0 + 14, cy - 6, x0 + 30, cy + 6], fill=(255, 220, 90))
-        draw.ellipse([x1 - 30, cy - 6, x1 - 14, cy + 6], fill=(255, 220, 90))
-    elif key == "dow":
-        pts = [(x0 + 12, y1 - 14), (x0 + 52, y1 - 30), (x0 + 84, y1 - 22),
-               (x0 + 116, y1 - 38), (x0 + 150, y1 - 48), (x1 - 12, y1 - 58)]
-        draw.line(pts, fill=(255, 255, 255), width=4, joint="curve")
-        draw.polygon([(x1 - 26, y1 - 58), (x1 - 8, y1 - 58), (x1 - 12, y1 - 42)],
-                     fill=(255, 255, 255))
-        for gx in range(x0 + 12, x1 - 8, 22):
-            draw.line([gx, y0 + 8, gx, y1 - 8], fill=(60, 140, 90), width=1)
-    elif key == "ariane":
-        draw.rectangle([cx - 7, cy - 18, cx + 7, cy + 8], fill=(250, 247, 238))
-        draw.polygon([(cx - 7, cy - 18), (cx, cy - 28), (cx + 7, cy - 18)],
-                     fill=(176, 0, 32))
-        draw.rectangle([cx - 12, cy - 12, cx - 7, cy + 2], fill=(200, 200, 200))
-        draw.rectangle([cx + 7, cy - 12, cx + 12, cy + 2], fill=(200, 200, 200))
-        draw.polygon([(cx - 6, cy + 8), (cx, cy + 20), (cx + 6, cy + 8)],
-                     fill=(255, 170, 40))
-        for sx, sy in [(x0 + 20, y0 + 6), (x1 - 24, y0 + 10), (x0 + 30, y0 + 16),
-                       (x1 - 34, y0 + 20)]:
-            draw.ellipse([sx, sy, sx + 3, sy + 3], fill=(255, 255, 255))
-    elif key == "riyadh":
-        draw.rectangle([cx - 10, cy - 16, cx + 10, cy + 12], fill=(30, 24, 18))
-        draw.polygon([(cx - 10, cy - 16), (cx, cy - 24), (cx + 10, cy - 16)],
-                     fill=(30, 24, 18))
-        for wy in range(cy - 12, cy + 10, 8):
-            draw.rectangle([cx - 6, wy, cx + 6, wy + 4], fill=(240, 200, 90))
-        draw.ellipse([cx + 16, cy - 16, cx + 34, cy + 0], fill=(255, 170, 60))
-        draw.ellipse([cx + 20, cy - 12, cx + 30, cy - 4], fill=(255, 220, 90))
-    elif key == "taiex":
-        draw.rectangle([x0 + 18, cy - 8, x0 + 52, cy + 14], fill=(16, 20, 36))
-        draw.rectangle([x0 + 26, cy - 2, x0 + 44, cy + 10], fill=(255, 255, 255))
-        for px in range(x0 + 30, x0 + 42, 5):
-            draw.line([px, cy + 8, px, cy + 0], fill=(24, 88, 96), width=2)
-        draw.line([(x0 + 62, cy + 12), (x0 + 100, cy - 6), (x0 + 138, cy - 16),
-                   (x1 - 16, cy - 22)], fill=(255, 255, 255), width=4)
-        draw.polygon([(x1 - 30, cy - 22), (x1 - 12, cy - 22), (x1 - 16, cy - 10)],
-                     fill=(255, 255, 255))
-    elif key == "senegal":
-        draw.polygon([(cx - 14, cy - 12), (cx + 14, cy - 12), (cx + 8, cy + 4),
-                      (cx - 8, cy + 4)], fill=(255, 210, 60))
-        draw.rectangle([cx - 4, cy + 4, cx + 4, cy + 10], fill=(255, 210, 60))
-        draw.rectangle([cx - 16, cy + 10, cx + 16, cy + 14], fill=(255, 210, 60))
-        draw.ellipse([cx - 26, cy - 12, cx - 12, cy - 2], fill=(255, 210, 60))
-        draw.ellipse([cx + 12, cy - 12, cx + 26, cy - 2], fill=(255, 210, 60))
-    elif key == "solomons":
-        draw.ellipse([x0 + 22, cy - 4, x1 - 22, cy + 14], fill=(20, 90, 70))
-        draw.polygon([(x0 + 60, cy - 4), (x0 + 90, cy - 16), (x0 + 120, cy - 4)],
-                     fill=(20, 90, 70))
-        draw.line([cx - 30, cy - 18, cx + 30, cy - 18], fill=(255, 255, 255),
-                  width=3)
-        draw.line([cx - 8, cy - 24, cx + 8, cy - 10], fill=(255, 255, 255),
-                  width=3)
-        draw.line([cx - 8, cy - 10, cx + 8, cy - 24], fill=(255, 255, 255),
-                  width=3)
-    elif key == "korea":
-        draw.polygon([(x0 + 30, cy + 12), (x0 + 30, cy - 8), (x0 + 78, cy - 22),
-                      (x0 + 78, cy + 12)], fill=(230, 230, 230))
-        draw.line([x0 + 78, cy - 22, x0 + 118, cy - 30], fill=(255, 255, 255),
-                  width=2)
-        draw.line([x0 + 78, cy - 22, x0 + 116, cy - 8], fill=(255, 255, 255),
-                  width=2)
-        draw.polygon([(x1 - 52, cy - 24), (x1 - 30, cy - 24), (x1 - 41, cy - 2)],
-                     fill=(255, 200, 40))
-        draw.text((x1 - 44, cy - 22), "!", font=font(F_SANS_BLACK, 16),
-                  fill=(110, 40, 40))
-    elif key == "gaza":
-        draw.rectangle([x0 + 30, cy - 18, x0 + 110, cy + 14], fill=(52, 44, 40))
-        draw.rectangle([x0 + 122, cy - 8, x1 - 30, cy + 14], fill=(44, 38, 34))
-        for wx in range(x0 + 38, x0 + 104, 14):
-            draw.rectangle([wx, cy - 10, wx + 7, cy - 2], fill=(240, 200, 90))
-        draw.ellipse([x0 + 128, cy - 20, x0 + 150, cy - 2], fill=(150, 140, 130))
-        draw.ellipse([x0 + 136, cy - 28, x0 + 152, cy - 14], fill=(165, 155, 145))
-    elif key == "kurdish":
-        draw.line([x0 + 30, cy + 12, x0 + 60, cy - 22], fill=(40, 34, 28), width=4)
-        draw.line([x0 + 90, cy + 12, x0 + 60, cy - 22], fill=(40, 34, 28), width=4)
-        draw.line([x0 + 40, cy + 2, x0 + 80, cy + 2], fill=(40, 34, 28), width=3)
-        draw.rectangle([x0 + 52, cy - 30, x0 + 68, cy - 20], fill=(40, 34, 28))
-        draw.ellipse([cx + 34, cy - 24, cx + 56, cy - 6], fill=(255, 170, 40))
-        draw.ellipse([cx + 40, cy - 20, cx + 50, cy - 10], fill=(255, 220, 90))
-        draw.rectangle([x1 - 44, cy + 6, x1 - 18, cy + 12], fill=(40, 34, 28))
-
-
-HERO_ART = {"shanghai": art_shanghai, "huawei": art_huawei,
-            "zaporizhzhia": art_zaporizhzhia}
-
-
-# ---------------------------------------------------------------- world map
-# Simplified continent outlines in lon/lat, projected linearly.
+# ---------------------------------------------------------------- map
 CONTINENTS = {
-    "na": [(-168, 66), (-140, 70), (-125, 72), (-110, 73), (-95, 80), (-85, 70),
-           (-80, 73), (-75, 62), (-65, 60), (-55, 52), (-60, 45), (-70, 42),
-           (-75, 35), (-80, 32), (-81, 26), (-84, 30), (-90, 29), (-97, 26),
-           (-105, 22), (-110, 24), (-115, 30), (-125, 40), (-125, 48),
-           (-130, 55), (-145, 60), (-155, 58), (-165, 60)],
-    "sa": [(-80, 9), (-75, 11), (-62, 11), (-52, 5), (-50, 0), (-44, -3),
-           (-35, -8), (-38, -15), (-40, -22), (-48, -28), (-53, -33),
-           (-58, -38), (-65, -41), (-68, -52), (-70, -54), (-73, -50),
-           (-73, -40), (-72, -30), (-70, -20), (-77, -12), (-80, -5), (-81, 0)],
-    "eu": [(-10, 36), (-9, 43), (-2, 44), (-1, 46), (-4, 48), (-2, 50),
-           (2, 51), (5, 53), (8, 57), (10, 59), (5, 60), (5, 62), (12, 65),
-           (18, 69), (25, 71), (30, 70), (32, 68), (40, 68), (44, 68),
-           (40, 64), (38, 60), (35, 58), (30, 60), (28, 59), (24, 58),
-           (21, 55), (19, 54), (15, 54), (12, 54), (8, 55), (8, 57),
-           (5, 53), (2, 51), (-2, 50), (-4, 48), (-1, 46), (-2, 44),
-           (-9, 43)],
-    "af": [(-17, 15), (-16, 20), (-13, 27), (-10, 31), (-5, 35), (0, 36),
-           (10, 37), (11, 34), (20, 32), (30, 31), (32, 31), (34, 28),
-           (35, 23), (37, 18), (40, 15), (43, 12), (48, 11), (51, 11),
-           (51, 2), (48, -2), (41, -5), (40, -10), (36, -18), (33, -26),
-           (28, -33), (20, -35), (17, -32), (15, -27), (13, -18), (12, -8),
-           (13, -1), (9, 4), (4, 6), (-8, 5), (-13, 8), (-17, 12)],
-    "as": [(32, 68), (60, 69), (90, 75), (120, 73), (150, 70), (162, 60),
-           (155, 52), (142, 45), (135, 35), (127, 35), (120, 32), (108, 18),
-           (103, 8), (98, 10), (92, 21), (86, 20), (80, 13), (77, 8),
-           (73, 16), (66, 24), (58, 26), (52, 25), (48, 30), (43, 29),
-           (39, 25), (35, 18), (33, 12), (30, 15), (28, 20), (26, 30),
-           (25, 36), (28, 40), (30, 45), (30, 60)],
-    "oc": [(113, -22), (114, -30), (115, -33), (118, -35), (124, -33),
-           (129, -32), (132, -32), (135, -35), (138, -35), (140, -38),
-           (145, -38), (150, -37), (153, -32), (153, -27), (150, -23),
-           (146, -19), (142, -15), (142, -11), (137, -12), (135, -15),
-           (132, -12), (130, -13), (126, -14), (122, -17), (118, -20)],
-    "id": [(95, 5), (98, 8), (100, 0), (104, -3), (106, -6), (110, -7),
-           (114, -8), (118, -9), (120, -10), (122, -8), (124, -5), (126, 0),
-           (128, 2), (130, -1), (128, -4), (124, -6), (120, -8), (116, -9),
-           (112, -8), (108, -7), (104, -4), (100, 0), (96, 4)],
+    "NA": [(-168, 66), (-140, 70), (-120, 72), (-95, 69), (-80, 62), (-70, 45), (-75, 35), (-80, 26), (-90, 20), (-97, 16), (-105, 22), (-117, 32), (-125, 42), (-125, 49), (-150, 60), (-168, 66)],
+    "SA": [(-80, 10), (-60, 5), (-50, 0), (-40, -10), (-48, -28), (-58, -38), (-70, -52), (-73, -40), (-78, -20), (-80, -5), (-80, 10)],
+    "EU": [(-10, 37), (-9, 43), (-2, 48), (0, 51), (5, 53), (8, 57), (12, 55), (18, 56), (21, 55), (24, 59), (28, 60), (30, 70), (40, 68), (45, 60), (40, 50), (30, 45), (28, 41), (23, 36), (15, 38), (8, 39), (3, 42), (-10, 37)],
+    "AF": [(-17, 15), (-10, 30), (0, 36), (10, 37), (20, 32), (30, 31), (35, 28), (43, 12), (51, 11), (48, -1), (40, -15), (35, -25), (28, -33), (18, -35), (15, -27), (12, -18), (9, -1), (-8, 4), (-17, 15)],
+    "AS": [(40, 68), (60, 70), (80, 73), (100, 77), (130, 72), (160, 70), (178, 65), (162, 60), (142, 50), (140, 40), (130, 33), (122, 31), (110, 20), (105, 10), (100, 8), (95, 16), (90, 22), (80, 8), (77, 8), (72, 20), (66, 25), (58, 25), (52, 27), (48, 30), (44, 39), (40, 42), (40, 68)],
+    "OC": [(114, -22), (122, -14), (132, -11), (142, -11), (146, -19), (153, -27), (150, -37), (140, -38), (130, -32), (122, -34), (115, -32), (114, -22)],
 }
-MAP_LON0, MAP_LON1 = -170, 190
-MAP_LAT0, MAP_LAT1 = -58, 78
+PINS = {1: (121.5, 31.2), 2: (-74.0, 40.7), 3: (35.1, 47.8), 4: (2.35, 48.85),
+        5: (-74.0, 40.7), 6: (-52.8, 5.2), 7: (46.7, 24.7), 8: (121.6, 25.0),
+        9: (-17.4, 14.7), 10: (160.0, -9.4), 11: (130.9, 37.5), 12: (34.5, 31.5),
+        13: (106.4, -6.2)}
+PIN_OFF = {1: (-18, 6), 5: (16, 14), 7: (16, 10), 8: (14, 10), 2: (-14, -12)}
 
-
-def map_xy(x0, y0, w, h, lon, lat):
-    fx = (lon - MAP_LON0) / (MAP_LON1 - MAP_LON0)
-    fy = (MAP_LAT1 - lat) / (MAP_LAT1 - MAP_LAT0)
-    return x0 + fx * w, y0 + fy * h
-
-
-def draw_map(draw, x0, y0, x1, y1, pins):
-    draw.rectangle([x0, y0, x1, y1], fill=(232, 236, 240),
-                   outline=RULE, width=1)
-    mw, mh = x1 - x0, y1 - y0
-    for lon in range(-150, 181, 30):
-        gx, _ = map_xy(x0, y0, mw, mh, lon, 0)
-        draw.line([gx, y0, gx, y1], fill=(214, 220, 228), width=1)
-    for lat in range(-60, 79, 30):
-        _, gy = map_xy(x0, y0, mw, mh, 0, lat)
-        draw.line([x0, gy, x1, gy], fill=(214, 220, 228), width=1)
+def draw_map(d, x, y, w, h):
+    d.rectangle([x, y, x + w - 1, y + h - 1], fill=(233, 230, 220), outline=RULE)
+    lon0, lon1, lat0, lat1 = -180, 180, 75, -55
+    def proj(lon, lat):
+        px = x + 6 + (lon - lon0) / (lon1 - lon0) * (w - 12)
+        py = y + 6 + (lat0 - lat) / (lat0 - lat1) * (h - 12)
+        return px, py
     for poly in CONTINENTS.values():
-        pts = [map_xy(x0, y0, mw, mh, lon, lat) for lon, lat in poly]
-        draw.polygon(pts, fill=(206, 198, 178), outline=(150, 142, 126))
-    placed = []
-    for p in pins:
-        px, py = map_xy(x0, y0, mw, mh, p["lon"], p["lat"])
-        px += p.get("dx", 0)
-        py += p.get("dy", 0)
-        placed.append((px, py, p["n"]))
-    for px, py, n in placed:
-        for qx, qy, qn in placed:
-            if qn > n:
-                d = ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
-                assert d >= 11, "MAP PIN COLLISION %d vs %d (%.1fpx)" % (n, qn, d)
-    for px, py, n in placed:
-        r = 7
-        draw.ellipse([px - r, py - r, px + r, py + r], fill=RED,
-                     outline=(255, 255, 255), width=1)
-        nf = font(F_SANS_BLACK, 8 if n < 10 else 7)
-        tw = draw.textlength(str(n), font=nf)
-        draw.text((px - tw / 2, py - 5.5), str(n), font=nf,
-                  fill=(255, 255, 255))
-    return placed
+        d.polygon([proj(lo, la) for lo, la in poly], fill=(196, 190, 172), outline=(150, 144, 128))
+    fpin = F("NotoSans-Bold.ttf", 11)
+    for n, (lo, la) in PINS.items():
+        px, py = proj(lo, la)
+        ox, oy = PIN_OFF.get(n, (0, 0))
+        px, py = px + ox, py + oy
+        if n in PIN_OFF:
+            bx, by = proj(lo, la)
+            d.line([(bx, by), (px, py)], fill=RED, width=1)
+        d.ellipse([px - 9, py - 9, px + 9, py + 9], fill=RED, outline=(255, 255, 255), width=1)
+        tw = d.textlength(str(n), font=fpin)
+        d.text((px - tw / 2, py - 6), str(n), font=fpin, fill=(255, 255, 255))
 
+# ---------------------------------------------------------------- render
+def render(data, out):
+    img = Image.new("RGB", (W, W), PAPER)
+    d = ImageDraw.Draw(img)
+    ys = {}
+    y = 0
+    for name, h in BUDGET:
+        ys[name] = (y, h); y += h
 
-# ---------------------------------------------------------------- sections
+    f_kick = F("NotoSansMono-Bold.ttf", 11)
+    f_date = F("NotoSerifDisplay-Black.ttf", 50)
+    f_sub = F("NotoSans-Bold.ttf", 13)
+    f_num_v = F("NotoSerifDisplay-Bold.ttf", 19)
+    f_num_l = F("NotoSans-Regular.ttf", 10)
+    f_tl = F("NotoSansMono-Regular.ttf", 10)
+    f_h_head = F("NotoSerifDisplay-Bold.ttf", 19)
+    f_h_deck = F("NotoSerif-Regular.ttf", 12)
+    f_h_src = F("NotoSans-Regular.ttf", 10)
+    f_m_head = F("NotoSerifDisplay-Bold.ttf", 14)
+    f_m_deck = F("NotoSans-Regular.ttf", 10)
+    f_m_src = F("NotoSans-Regular.ttf", 9)
+    f_b_head = F("NotoSans-Bold.ttf", 11)
+    f_b_body = F("NotoSans-Regular.ttf", 11)
+    f_sec = F("NotoSans-Bold.ttf", 10)
+    f_foot = F("NotoSans-Regular.ttf", 10)
+    f_banner = F("NotoSans-Bold.ttf", 13)
+    f_banner_s = F("NotoSans-Bold.ttf", 10)
 
-def section_masthead(draw, data):
-    f_kick = font(F_SANS_BOLD, 10)
-    f_date = font(F_SERIF_BLACK, 54)
-    f_deck = font(F_SERIF_BOLD, 13)
-    kick = data["kicker"]
-    tw = draw.textlength(kick, font=f_kick)
-    draw.text(((W - tw) / 2, 14), kick, font=f_kick, fill=FAINT)
-    date = data["edition"]
-    tw = draw.textlength(date, font=f_date)
-    draw.text(((W - tw) / 2, 26), date, font=f_date, fill=INK)
-    deck = data["deck"]
-    tw = draw.textlength(deck, font=f_deck)
-    draw.text(((W - tw) / 2, 90), deck, font=f_deck, fill=RED)
-    draw.line([MARGIN, 102, W - MARGIN, 102], fill=INK, width=2)
+    # kicker
+    y0, h0 = ys["kicker"]
+    d.rectangle([0, y0, W - 1, y0 + h0 - 1], fill=DARK)
+    t = data["kicker"]
+    d.text(((W - d.textlength(t, font=f_kick)) / 2, y0 + 3), t, font=f_kick, fill=(255, 255, 255))
 
+    # masthead: the date IS the headline
+    y0, h0 = ys["masthead"]
+    date = "Tuesday 24 November 2026"
+    d.text(((W - d.textlength(date, font=f_date)) / 2, y0 + 4), date, font=f_date, fill=INK)
+    sub = "THE WORLD IN ONE DAY"
+    d.text(((W - d.textlength(sub, font=f_sub)) / 2, y0 + 64), sub, font=f_sub, fill=RED)
+    d.line([(MARGIN, y0 + h0 - 2), (W - MARGIN, y0 + h0 - 2)], fill=INK, width=2)
+    d.text((MARGIN, y0 + 8), "THE WORLD", font=f_sub, fill=INK)
+    d.text((W - MARGIN - d.textlength("ONE DAY · ONE PAGE", font=f_sub), y0 + 8),
+           "ONE DAY · ONE PAGE", font=f_sub, fill=INK)
 
-def section_numbers(draw, data):
-    y0, y1 = 108, 146
-    n = len(data["numbers"])
-    cell = CW / n
-    f_num = font(F_SANS_BLACK, 20)
-    f_lab = font(F_SANS_BOLD, 8)
-    for i, (num, lab) in enumerate(data["numbers"]):
-        cx = MARGIN + cell * i + cell / 2
-        tw = draw.textlength(num, font=f_num)
-        draw.text((cx - tw / 2, y0 + 2), num, font=f_num, fill=INK)
-        tw = draw.textlength(lab, font=f_lab)
-        assert tw <= cell - 6, "NUMBER LABEL TOO WIDE: %r" % lab
-        draw.text((cx - tw / 2, y0 + 26), lab, font=f_lab, fill=FAINT)
-        if i:
-            x = MARGIN + cell * i
-            draw.line([x, y0 + 4, x, y1 - 4], fill=RULE, width=1)
-    draw.line([MARGIN, y1, W - MARGIN, y1], fill=RULE, width=1)
+    # IN NUMBERS
+    y0, h0 = ys["numbers"]
+    xs, ws = cols(MARGIN, W - 2 * MARGIN, 6)
+    for (val, lab), cx, cw in zip(data["numbers"], xs, ws):
+        d.text((cx, y0 + 1), val, font=f_num_v, fill=RED)
+        d.text((cx, y0 + 20), lab, font=f_num_l, fill=INK)
+        if cx > MARGIN:
+            d.line([(cx - 4, y0 + 2), (cx - 4, y0 + h0 - 4)], fill=RULE, width=1)
+    d.line([(MARGIN, y0 + h0 - 1), (W - MARGIN, y0 + h0 - 1)], fill=RULE, width=1)
 
+    # timeline UTC
+    y0, h0 = ys["timeline"]
+    xs, ws = cols(MARGIN, W - 2 * MARGIN, 7)
+    for (tm, ev), cx, cw in zip(data["timeline"], xs, ws):
+        d.text((cx, y0 + 4), tm, font=F("NotoSansMono-Bold.ttf", 10), fill=RED)
+        lines = fit_lines(d, ev, f_tl, cw - 34, 2, f"timeline {tm}")
+        d.text((cx + 34, y0 + 4), lines[0], font=f_tl, fill=INK)
+        if len(lines) > 1:
+            d.text((cx + 34, y0 + 14), lines[1], font=f_tl, fill=INK)
+    d.line([(MARGIN, y0 + h0 - 1), (W - MARGIN, y0 + h0 - 1)], fill=INK, width=1)
 
-def section_regions(draw, data):
-    y = 154
-    f = font(F_SANS_BOLD, 10)
-    parts = []
-    total = 0
-    for name, count, colour in data["regions"]:
-        label = "%s %d" % (name, count)
-        w = draw.textlength(label, font=f) + 16
-        parts.append((label, colour, w))
-        total += w + 14
-    total -= 14
-    x = (W - total) / 2
-    for label, colour, w in parts:
-        draw.ellipse([x, y + 2, x + 8, y + 10], fill=colour)
-        draw.text((x + 12, y), label, font=f, fill=INK)
-        x += w + 14
-    draw.line([MARGIN, 174, W - MARGIN, 174], fill=RULE, width=1)
+    # heroes
+    y0, h0 = ys["heroes"]
+    xs, ws = cols(MARGIN, W - 2 * MARGIN, 3)
+    art_h = 110
+    for hero, cx, cw in zip(data["heroes"], xs, ws):
+        PAINTERS[hero["art"]](d, cx, y0, cw, art_h)
+        banner(d, cx, y0 + art_h - 20, cw, hero["banner"], f_banner, 20)
+        ty = y0 + art_h + 4
+        d.text((cx, ty), f"{hero['n']} · {hero['place']} — {hero['section']}", font=f_sec, fill=RED)
+        ty += 13
+        lines = fit_lines(d, hero["headline"], f_h_head, cw, 2, f"hero {hero['n']} headline")
+        for ln in lines:
+            d.text((cx, ty), ln, font=f_h_head, fill=INK); ty += 21
+        lines = fit_lines(d, hero["deck"], f_h_deck, cw, 2, f"hero {hero['n']} deck")
+        for ln in lines:
+            d.text((cx, ty), ln, font=f_h_deck, fill=INK); ty += 13
+        src = f"{hero['tag']} · {hero['source']}"
+        d.text((cx, y0 + h0 - 12), src, font=f_h_src, fill=GREY)
+        assert ty <= y0 + h0 - 14, f"hero {hero['n']} overflow"
 
+    # minis: 2 rows x 5
+    y0, h0 = ys["minis"]
+    xs, ws = cols(MARGIN, W - 2 * MARGIN, 5)
+    row_h = h0 // 2
+    art_h = 60
+    for i, mini in enumerate(data["minis"]):
+        row, col = divmod(i, 5)
+        cx, cw = xs[col], ws[col]
+        my = y0 + row * row_h
+        PAINTERS[mini["art"]](d, cx, my, cw, art_h)
+        banner(d, cx, my + art_h - 16, cw, mini["banner"], f_banner_s, 16)
+        ty = my + art_h + 3
+        d.text((cx, ty), f"{mini['n']} · {mini['place']}", font=f_sec, fill=RED)
+        ty += 12
+        lines = fit_lines(d, mini["headline"], f_m_head, cw, 2, f"mini {mini['n']} headline")
+        for ln in lines:
+            d.text((cx, ty), ln, font=f_m_head, fill=INK); ty += 14
+        lines = fit_lines(d, mini["deck"], f_m_deck, cw, 2, f"mini {mini['n']} deck")
+        for ln in lines:
+            d.text((cx, ty), ln, font=f_m_deck, fill=INK); ty += 11
+        d.text((cx, my + row_h - 11), f"{mini['tag']} · {mini['source']}", font=f_m_src, fill=GREY)
+        assert ty <= my + row_h - 12, f"mini {mini['n']} overflow"
 
-def section_timeline(draw, data):
-    y_line = 194
-    draw.line([MARGIN, y_line, W - MARGIN, y_line], fill=RULE, width=1)
-    n = len(data["timeline"])
-    step = CW / n
-    f_t = font(F_MONO_BOLD, 10)
-    f_l = font(F_SANS_BOLD, 8)
-    for i, (t, label) in enumerate(data["timeline"]):
-        cx = MARGIN + step * i + step / 2
-        tw = draw.textlength(t, font=f_t)
-        draw.text((cx - tw / 2, 180), t, font=f_t, fill=RED)
-        draw.ellipse([cx - 4, y_line - 4, cx + 4, y_line + 4], fill=RED)
-        tw = draw.textlength(label, font=f_l)
-        assert tw <= step - 6, "TIMELINE LABEL TOO WIDE: %r" % label
-        draw.text((cx - tw / 2, 200), label, font=f_l, fill=INK)
-    draw.line([MARGIN, 208, W - MARGIN, 208], fill=RULE, width=1)
+    # also-on + map
+    y0, h0 = ys["alsoon"]
+    d.text((MARGIN, y0 + 2), "ALSO ON — 25 MORE", font=f_sec, fill=INK)
+    d.line([(MARGIN, y0 + 16), (MARGIN + 620, y0 + 16)], fill=INK, width=1)
+    bx0, bw = MARGIN, 306
+    pitch = 20
+    for ci in range(2):
+        col = data["briefs"][ci * 13:(ci + 1) * 13] if ci == 0 else data["briefs"][13:25]
+        cx = bx0 + ci * (bw + 8)
+        by = y0 + 22
+        for n, place, head, body, tag in col:
+            d.text((cx, by), f"{n}", font=F("NotoSans-Bold.ttf", 11), fill=RED)
+            d.text((cx + 22, by), place, font=f_b_head, fill=INK)
+            d.text((cx + 22, by + 11), head, font=f_b_body, fill=GREY)
+            by += pitch
+    mx = MARGIN + 620 + 8
+    mw = W - MARGIN - mx
+    d.text((mx, y0 + 2), "WHERE IT HAPPENED · PINS 1–13", font=f_sec, fill=INK)
+    draw_map(d, mx, y0 + 18, mw, h0 - 44)
+    d.text((mx, y0 + h0 - 22), "Pins 1–13 = the heroes and minis above.", font=f_foot, fill=GREY)
 
+    # date check
+    y0, h0 = ys["datecheck"]
+    d.rectangle([MARGIN, y0, MARGIN + 5, y0 + h0 - 1], fill=RED)
+    tx = MARGIN + 12
+    d.text((tx, y0 + 2), "DATE CHECK — LEFT OUT AS ANOTHER DAY'S NEWS", font=f_sec, fill=RED)
+    lines = fit_lines(d, data["datecheck"]["leftout"], f_foot, W - MARGIN - tx, 2, "datecheck leftout")
+    ty = y0 + 16
+    for ln in lines:
+        d.text((tx, ty), ln, font=f_foot, fill=INK); ty += 12
+    d.text((tx, ty + 2), "NOT YET:  ", font=F("NotoSans-Bold.ttf", 10), fill=INK)
+    d.text((tx + 52, ty + 2), data["datecheck"]["notyet"], font=f_foot, fill=INK)
+    d.line([(MARGIN, y0 + h0 - 1), (W - MARGIN, y0 + h0 - 1)], fill=RULE, width=1)
 
-def draw_hero(draw, hero, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], outline=RULE, width=1)
-    art_y1 = y0 + 132
-    HERO_ART[hero["art"]](draw, x0 + 1, y0 + 1, x1 - 1, art_y1)
-    banner(draw, (x0 + 1, y0 + 1, x1 - 1, art_y1), hero["banner"], size=15)
-    tx = x0 + 6
-    ty = art_y1 + 5
-    f_place = font(F_SANS_BOLD, 9)
-    num = "%d  " % hero["n"]
-    draw.text((tx, ty), num, font=font(F_SANS_BLACK, 11), fill=RED)
-    px = tx + draw.textlength(num, font=font(F_SANS_BLACK, 11))
-    draw.text((px, ty + 1), hero["place"], font=f_place, fill=INK)
-    pw = draw.textlength(hero["place"], font=f_place)
-    tag_chip(draw, px + pw + 6, ty, hero["tag"])
-    hy = ty + 15
-    f_head = font(F_SERIF_BOLD, 17)
-    lines = fit_text(draw, hero["headline"], f_head, x1 - x0 - 12, max_lines=2)
-    hy = draw_lines(draw, lines, tx, hy, f_head, INK, 19)
-    f_deck = font(F_SERIF, 10)
-    lines = fit_text(draw, hero["deck"], f_deck, x1 - x0 - 12, max_lines=2)
-    draw_lines(draw, lines, tx, hy + 1, f_deck, (40, 38, 34), 12)
-    f_src = font(F_SANS, 8)
-    src = "Source: " + hero["source"]
-    assert draw.textlength(src, font=f_src) <= x1 - x0 - 12, "HERO SRC TOO WIDE"
-    draw.text((tx, y1 - 11), src, font=f_src, fill=FAINT)
+    # footer
+    y0, h0 = ys["footer"]
+    d.text((MARGIN, y0 + 2), "HOW SURE:  " + data["legend"], font=f_foot, fill=GREY)
+    d.text((MARGIN, y0 + 13), data["footer"], font=f_foot, fill=GREY)
 
-
-def draw_mini(draw, mini, x0, y0, x1, y1):
-    draw.rectangle([x0, y0, x1, y1], outline=RULE, width=1)
-    art_y1 = y0 + 56
-    art_mini(draw, mini["art"], x0 + 1, y0 + 1, x1 - 1, art_y1)
-    banner(draw, (x0 + 1, y0 + 1, x1 - 1, art_y1), mini["banner"], size=11)
-    tx = x0 + 5
-    ty = art_y1 + 4
-    f_place = font(F_SANS_BOLD, 8)
-    num = "%d " % mini["n"]
-    draw.text((tx, ty), num, font=font(F_SANS_BLACK, 10), fill=RED)
-    px = tx + draw.textlength(num, font=font(F_SANS_BLACK, 10))
-    pw = draw.textlength(mini["place"], font=f_place)
-    if pw > x1 - px - 52:
-        place = mini["place"].split(" · ")[0]
-        pw = draw.textlength(place, font=f_place)
-    else:
-        place = mini["place"]
-    draw.text((px, ty + 1), place, font=f_place, fill=INK)
-    tag_chip(draw, x1 - 5 - 52, ty, mini["tag"], h=12)
-    hy = ty + 13
-    f_head = font(F_SERIF_BOLD, 12)
-    lines = fit_text(draw, mini["headline"], f_head, x1 - x0 - 10, max_lines=2)
-    hy = draw_lines(draw, lines, tx, hy, f_head, INK, 13)
-    f_deck = font(F_SERIF, 9)
-    lines = fit_text(draw, mini["deck"], f_deck, x1 - x0 - 10, max_lines=2)
-    draw_lines(draw, lines, tx, hy, f_deck, (40, 38, 34), 10)
-    f_src = font(F_SANS, 7)
-    src = "Source: " + mini["source"]
-    assert draw.textlength(src, font=f_src) <= x1 - x0 - 10, "MINI SRC TOO WIDE"
-    draw.text((tx, y1 - 8), src, font=f_src, fill=FAINT)
-
-
-TAG_CODE = {"CONFIRMED": "C", "OFFICIAL": "O", "REPORTED": "R",
-            "CLAIM": "CL", "ONGOING": "OG"}
-
-
-def section_also_on(draw, data):
-    x0, y0, x1, y1 = MARGIN, 732, 652, 916
-    f_h = font(F_SANS_BLACK, 12)
-    draw.text((x0, y0), "ALSO ON — 24 MORE", font=f_h, fill=INK)
-    f_leg = font(F_SANS, 8)
-    leg = "C = CONFIRMED · O = OFFICIAL · R = REPORTED · CL = CLAIM · OG = ONGOING"
-    draw.text((x0, y0 + 16), leg, font=f_leg, fill=FAINT)
-    draw.line([x0, y0 + 28, x1, y0 + 28], fill=INK, width=1)
-    col_w = 316
-    cols = [x0, x0 + col_w + 8]
-    f_b = font(F_SANS_BOLD, 9)
-    f_t = font(F_SANS, 9)
-    f_n = font(F_SANS_BLACK, 9)
-    row_y = y0 + 34
-    row_h = 13
-    for i, b in enumerate(data["briefs"]):
-        col = i // 12
-        row = i % 12
-        bx = cols[col]
-        by = row_y + row * row_h
-        num = "%d " % b["n"]
-        draw.text((bx, by), num, font=f_n, fill=RED)
-        nx = bx + draw.textlength(num, font=f_n)
-        head = b["place"] + " — "
-        draw.text((nx, by), head, font=f_b, fill=INK)
-        hx = nx + draw.textlength(head, font=f_b)
-        code = " [%s]" % TAG_CODE[b["tag"]]
-        cw = draw.textlength(code, font=f_b)
-        avail = bx + col_w - hx - cw
-        lines = wrap(draw, b["text"], f_t, avail)
-        assert len(lines) == 1, "BRIEF TOO LONG: %r" % b["text"]
-        draw.text((hx, by), lines[0], font=f_t, fill=(40, 38, 34))
-        tx = hx + draw.textlength(lines[0], font=f_t)
-        draw.text((tx, by), code, font=f_b,
-                  fill=TAG_FILL[b["tag"]])
-    draw.line([x0, y1, x1, y1], fill=RULE, width=1)
-
-
-def section_map(draw, data):
-    x0, y0, x1, y1 = 660, 732, W - MARGIN, 916
-    f_h = font(F_SANS_BLACK, 12)
-    draw.text((x0, y0), "WHERE IT HAPPENED · PINS 1–18", font=f_h, fill=INK)
-    f_leg = font(F_SANS, 8)
-    draw.text((x0, y0 + 16), "Number = story number", font=f_leg, fill=FAINT)
-    draw.line([x0, y0 + 28, x1, y0 + 28], fill=INK, width=1)
-    draw_map(draw, x0, y0 + 34, x1, y1, data["map_pins"])
-
-
-def section_date_check(draw, data):
-    x0, y0, x1, y1 = MARGIN, 924, W - MARGIN, 976
-    draw.rectangle([x0, y0, x1, y1], outline=RED, width=1)
-    f_h = font(F_SANS_BLACK, 11)
-    draw.text((x0 + 8, y0 + 5), "DATE CHECK — WHAT WE LEFT OUT, AND WHY",
-              font=f_h, fill=RED)
-    f_t = font(F_SANS, 9)
-    lines = fit_text(draw, data["date_check"], f_t, x1 - x0 - 16, max_lines=3)
-    draw_lines(draw, lines, x0 + 8, y0 + 22, f_t, INK, 11)
-
-
-def section_footer(draw, data):
-    f = font(F_SANS, 9)
-    lines = fit_text(draw, data["footer"], f, CW, max_lines=1)
-    draw.text((MARGIN, 984), lines[0], font=f, fill=FAINT)
-    lines = fit_text(draw, data["how_sure"], f, CW, max_lines=1)
-    draw.text((MARGIN, 997), lines[0], font=f, fill=FAINT)
-
-
-def main():
-    with open(os.path.join(HERE, "stories.json"), "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    assert len(data["heroes"]) == 3
-    assert len(data["minis"]) == 10
-    assert len(data["briefs"]) == 24
-    total = (len(data["heroes"]) + len(data["minis"]) + len(data["briefs"]))
-    assert total == 37, "STORY COUNT %d != 37" % total
-    region_sum = sum(c for _, c, _ in data["regions"])
-    assert region_sum == 37, "REGION SUM %d != 37" % region_sum
-    assert len(data["map_pins"]) == 18
-
-    img = Image.new("RGB", (W, H), PAPER)
-    draw = ImageDraw.Draw(img)
-    section_masthead(draw, data)
-    section_numbers(draw, data)
-    section_regions(draw, data)
-    section_timeline(draw, data)
-    hero_w = 328
-    for i, hero in enumerate(data["heroes"]):
-        x0 = MARGIN + i * (hero_w + GUT)
-        draw_hero(draw, hero, x0, 214, x0 + hero_w, 444)
-    mini_ws = [194, 194, 194, 194, 192]
-    for r in range(2):
-        y0 = 452 + r * 140
-        x = MARGIN
-        for c in range(5):
-            mini = data["minis"][r * 5 + c]
-            draw_mini(draw, mini, x, y0, x + mini_ws[c], y0 + 132)
-            x += mini_ws[c] + GUT
-    section_also_on(draw, data)
-    section_map(draw, data)
-    section_date_check(draw, data)
-    section_footer(draw, data)
-
-    out = os.path.join(HERE, "entry.png")
-    img.save(out, format="PNG", optimize=True)
-    print("wrote %s" % out)
-
+    img.save(out, "PNG", optimize=True)
 
 if __name__ == "__main__":
-    main()
+    data = json.loads(Path(sys.argv[1] if len(sys.argv) > 1 else "stories.json").read_text())
+    render(data, sys.argv[2] if len(sys.argv) > 2 else "entry.png")
